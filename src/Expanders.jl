@@ -46,15 +46,6 @@ function expand(doc::Documents.Document)
     end
 end
 
-function partition(f, xs)
-    T = eltype(xs)
-    xs_true, xs_false = T[], T[]
-    for x in xs
-        f(x) ? push!(xs_true, x) : push!(xs_false, x)
-    end
-    return xs_true, xs_false
-end
-
 # run some checks after expanding the page
 function pagecheck(page)
     # make sure there is no "continued code" lingering around
