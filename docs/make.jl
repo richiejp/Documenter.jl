@@ -49,6 +49,7 @@ makedocs(
         ],
         "contributing.md",
     ],
+    priority_expand = ["man/other-formats.md", "foo.md"],
     strict = true,
 )
 
