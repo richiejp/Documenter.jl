@@ -14,25 +14,25 @@ regex_escape(str) = sprint(escape_string, str, "\\^\$.|?*+()[{")
 
 # helper to display linerange for error printing
 function find_block_in_file(code, file)
-    content = read(Base.find_source_file(file), String)
+    source_file = Base.find_source_file(file)
+    source_file === nothing && return nothing
+    isfile(source_file) || return nothing
+    content = read(source_file, String)
     content = replace(content, "\r\n" => "\n")
     # make a regex of the code that matches leading whitespace
     rcode = "\\h*" * replace(regex_escape(code), "\\n" => "\\n\\h*")
     blockidx = findfirst(Regex(rcode), content)
-    if blockidx !== nothing
-        startline = countlines(IOBuffer(content[1:prevind(content, first(blockidx))]))
-        endline = startline + countlines(IOBuffer(code)) + 1 # +1 to include the closing ```
-        return ":$(startline)-$(endline)"
-    else
-        return ""
-    end
+    blockidx === nothing && return nothing
+    startline = countlines(IOBuffer(content[1:prevind(content, first(blockidx))]))
+    endline = startline + countlines(IOBuffer(code)) + 1 # +1 to include the closing ```
+    return ":$(startline)-$(endline)"
 end
 
 # Pretty-printing locations
 function locrepr(file, line=nothing)
     str = Base.contractuser(file) # TODO: Maybe print this relative the doc-root??
     line !== nothing && (str = str * "$(line)")
-    return "`$(str)`"
+    return str
 end
 
 # Directory paths.
@@ -318,7 +318,7 @@ not in a repository, the function returns `nothing`.
 
 The `dbdir` keyword argument specifies the name of the directory we are searching for to
 determine if this is a repostory or not. If there is a file called `dbdir`, then it's
-contents is checked under the assumption that it is a Git worktree.
+contents is checked under the assumption that it is a Git worktree or a submodule.
 """
 function repo_root(file; dbdir=".git")
     parent_dir, parent_dir_last = dirname(abspath(file)), ""
@@ -329,7 +329,7 @@ function repo_root(file; dbdir=".git")
         if isfile(dbdir_path)
             contents = chomp(read(dbdir_path, String))
             if startswith(contents, "gitdir: ")
-                if isdir(contents[9:end])
+                if isdir(joinpath(parent_dir, contents[9:end]))
                     return parent_dir
                 end
             end
@@ -596,6 +596,63 @@ Checks whether `url` is an absolute URL (as opposed to a relative one).
 """
 isabsurl(url) = occursin(ABSURL_REGEX, url)
 const ABSURL_REGEX = r"^[[:alpha:]+-.]+://"
+
+"""
+    mdparse(s::AbstractString; mode=:single)
+
+Parses the given string as Markdown using `Markdown.parse`, but strips away the surrounding
+layers, such as the outermost `Markdown.MD`. What exactly is returned depends on the `mode`
+keyword.
+
+The `mode` keyword argument can be one of the following:
+
+* `:single` (default) -- returns a single block-level object (e.g. `Markdown.Paragraph` or
+  `Markdown.Admonition`) and errors if the string parses into multiple blocks.
+* `:blocks` -- the function returns a `Vector{Any}` of Markdown blocks.
+* `:span` -- Returns a `Vector{Any}` of span-level items, stripping away the outer block.
+  This requires the string to parse into a single `Markdown.Paragraph`, the contents of
+  which gets returned.
+"""
+function mdparse(s::AbstractString; mode=:single)
+    mode in [:single, :blocks, :span] || throw(ArgumentError("Invalid mode keyword $(mode)"))
+    md = Markdown.parse(s)
+    if mode == :blocks
+        md.content
+    elseif length(md.content) == 0
+        # case where s == "". We'll just return an empty string / paragraph.
+        (mode == :single) ? Markdown.Paragraph(Any[""]) : Any[""]
+    elseif (mode == :single || mode == :span) && length(md.content) > 1
+        @error "mode == :$(mode) requires the Markdown string to parse into a single block" s md.content
+        throw(ArgumentError("Unsuitable string for mode=:$(mode)"))
+    else
+        @assert length(md.content) == 1
+        @assert mode == :span || mode == :single
+        if mode == :span && !isa(md.content[1], Markdown.Paragraph)
+            @error "mode == :$(mode) requires the Markdown string to parse into a Markdown.Paragraph" s md.content
+            throw(ArgumentError("Unsuitable string for mode=:$(mode)"))
+        end
+        (mode == :single) ? md.content[1] : md.content[1].content
+    end
+end
+
+# Capturing output in different representations similar to IJulia.jl
+function limitstringmime(m::MIME"text/plain", x)
+    io = IOBuffer()
+    show(IOContext(io, :limit=> true), m, x)
+    return String(take!(io))
+end
+function display_dict(x)
+    out = Dict{MIME,Any}()
+    x === nothing && return out
+    # Always generate text/plain
+    out[MIME"text/plain"()] = limitstringmime(MIME"text/plain"(), x)
+    for m in [MIME"text/html"(), MIME"image/svg+xml"(), MIME"image/png"(),
+              MIME"image/webp"(), MIME"image/gif"(), MIME"image/jpeg"(),
+              MIME"text/latex"(), MIME"text/markdown"()]
+        showable(m, x) && (out[m] = stringmime(m, x))
+    end
+    return out
+end
 
 include("DOM.jl")
 include("MDFlatten.jl")

@@ -136,7 +136,7 @@ struct DocsNode
 end
 
 struct DocsNodes
-    nodes :: Vector{DocsNode}
+    nodes :: Vector{Union{DocsNode,Markdown.Admonition}}
 end
 
 struct EvalNode
@@ -151,6 +151,10 @@ end
 struct RawNode
     name::Symbol
     text::String
+end
+
+struct MultiOutput
+    content::Vector
 end
 
 # Navigation
@@ -207,12 +211,11 @@ struct User
     doctestfilters::Vector{Regex} # Filtering for doctests
     strict::Bool              # Throw an exception when any warnings are encountered.
     pages   :: Vector{Any}    # Ordering of document pages specified by the user.
-    assets  :: Vector{String}
     repo    :: String  # Template for URL to source code repo
     sitename:: String
     authors :: String
-    analytics::String
     version :: String # version string used in the version selector by default
+    highlightsig::Bool  # assume leading unlabeled code blocks in docstrings to be Julia.
 end
 
 """
@@ -260,12 +263,11 @@ function Document(plugins = nothing;
         strict::Bool                 = false,
         modules  :: Utilities.ModVec = Module[],
         pages    :: Vector           = Any[],
-        assets   :: Vector           = String[],
         repo     :: AbstractString   = "",
         sitename :: AbstractString   = "",
         authors  :: AbstractString   = "",
-        analytics :: AbstractString  = "",
         version :: AbstractString    = "",
+        highlightsig::Bool           = true,
         others...
     )
     Utilities.check_kwargs(others)
@@ -291,12 +293,11 @@ function Document(plugins = nothing;
         doctestfilters,
         strict,
         pages,
-        assets,
         repo,
         sitename,
         authors,
-        analytics,
-        version
+        version,
+        highlightsig
     )
     internal = Internal(
         Utilities.assetsdir(),

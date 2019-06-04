@@ -4,7 +4,7 @@ A module for rendering `Document` objects to LaTeX and PDF.
 # Keywords
 
 [`LaTeXWriter`](@ref) uses the following additional keyword arguments that can be passed to
-[`Documenter.makedocs`](@ref): `authors`, `sitename`.
+[`makedocs`](@ref Documenter.makedocs): `authors`, `sitename`.
 
 **`sitename`** is the site's title displayed in the title bar and at the top of the
 navigation menu. It goes into the `\\title` LaTeX command.
@@ -19,7 +19,7 @@ import ...Documenter: Documenter
     LaTeXWriter.LaTeX(; kwargs...)
 
 Output format specifier that results in LaTeX/PDF output.
-Used together with [`makedocs`](@ref), e.g.
+Used together with [`makedocs`](@ref Documenter.makedocs), e.g.
 
 ```julia
 makedocs(
@@ -85,6 +85,7 @@ const DOCUMENT_STRUCTURE = (
 )
 
 function render(doc::Documents.Document, settings::LaTeX=LaTeX())
+    @info "LaTeXWriter: rendering PDF."
     mktempdir() do path
         cp(joinpath(doc.user.root, doc.user.build), joinpath(path, "build"))
         cd(joinpath(path, "build")) do
@@ -316,6 +317,41 @@ function latex(io::IO, node::Documents.EvalNode, page, doc)
     node.result === nothing ? nothing : latex(io, node.result, page, doc)
 end
 
+# Select the "best" representation for LaTeX output.
+using Base64: base64decode
+function latex(io::IO, mo::Documents.MultiOutput)
+    foreach(x->Base.invokelatest(latex, io, x), mo.content)
+end
+function latex(io::IO, d::Dict{MIME,Any})
+    filename = String(rand('a':'z', 7))
+    if haskey(d, MIME"image/png"())
+        write("$(filename).png", base64decode(d[MIME"image/png"()]))
+        _println(io, """
+        \\begin{figure}[H]
+        \\centering
+        \\includegraphics{$(filename)}
+        \\end{figure}
+        """)
+    elseif haskey(d, MIME"image/jpeg"())
+        write("$(filename).jpeg", base64decode(d[MIME"image/jpeg"()]))
+        _println(io, """
+        \\begin{figure}[H]
+        \\centering
+        \\includegraphics{$(filename)}
+        \\end{figure}
+        """)
+    elseif haskey(d, MIME"text/latex"())
+        latex(io, Utilities.mdparse(d[MIME"text/latex"()]; mode = :single))
+    elseif haskey(d, MIME"text/markdown"())
+        latex(io, Markdown.parse(d[MIME"text/markdown"()]))
+    elseif haskey(d, MIME"text/plain"())
+        latex(io, Markdown.Code(d[MIME"text/plain"()]))
+    else
+        error("this should never happen.")
+    end
+    return nothing
+end
+
 
 ## Basic Nodes. AKA: any other content that hasn't been handled yet.
 
@@ -499,6 +535,7 @@ function latexinline(io::IO, md::Markdown.Image)
         else
             normpath(joinpath(dirname(io.filename), md.url))
         end
+        url = replace(url, "\\" => "/") # use / on Windows too.
         wrapinline(io, "includegraphics") do
             _print(io, url)
         end

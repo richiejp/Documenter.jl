@@ -237,6 +237,14 @@ foo(2, 3)
 6
 ```
 
+## World age issue for show
+```jldoctest
+julia> @enum Color red blue green
+
+julia> instances(Color)
+(red, blue, green)
+```
+
 
 # Sanitise module names
 
@@ -386,6 +394,14 @@ julia> ans
 1
 ```
 
+```jldoctest issue959
+julia> "hello"; "world"
+"world"
+
+julia> ans
+"world"
+```
+
 # Issue513
 
 ```jldoctest named
@@ -450,3 +466,16 @@ r = :a
 * [Colons not allowed on Windows -- `some:path`](some:path)
 * [No "drive" -- `:path`](:path)
 * [Absolute Windows paths -- `X:\some\path`](X:\some\path)
+
+# Rendering text/markdown
+
+```@example
+struct MarkdownOnly
+    value::String
+end
+Base.show(io::IO, ::MIME"text/markdown", mo::MarkdownOnly) = print(io, mo.value)
+
+MarkdownOnly("""
+**bold** output from MarkdownOnly
+""")
+```

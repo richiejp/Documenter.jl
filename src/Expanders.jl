@@ -259,11 +259,12 @@ end
 # -----
 
 function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
-    failed = false
-    nodes  = DocsNode[]
+    nodes  = Union{DocsNode,Markdown.Admonition}[]
     curmod = get(page.globals.meta, :CurrentModule, Main)
     lines = Utilities.find_block_in_file(x.code, page.source)
     for (ex, str) in Utilities.parseblock(x.code, doc, page)
+        admonition = Markdown.Admonition("warning", "Missing docstring.",
+            Utilities.mdparse("Missing docstring for `$(strip(str))`. Check Documenter's build log for details.", mode=:blocks))
         binding = try
             Documenter.DocSystem.binding(curmod, ex)
         catch err
@@ -275,7 +276,7 @@ function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
                 ```
                 """,
                 exception = err)
-            failed = true
+            push!(nodes, admonition)
             continue
         end
         # Undefined `Bindings` get discarded.
@@ -287,7 +288,7 @@ function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
                 $(x.code)
                 ```
                 """)
-            failed = true
+            push!(nodes, admonition)
             continue
         end
         typesig = Core.eval(curmod, Documenter.DocSystem.signature(ex, str))
@@ -302,7 +303,7 @@ function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
                 $(x.code)
                 ```
                 """)
-            failed = true
+            push!(nodes, admonition)
             continue
         end
 
@@ -323,13 +324,16 @@ function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
                 $(x.code)
                 ```
                 """)
-            failed = true
+            push!(nodes, admonition)
             continue
         end
 
         # Concatenate found docstrings into a single `MD` object.
         docstr = Markdown.MD(map(Documenter.DocSystem.parsedoc, docs))
         docstr.meta[:results] = docs
+
+        # If the first element of the docstring is a code block, make it Julia by default.
+        doc.user.highlightsig && highlightsig!(docstr)
 
         # Generate a unique name to be used in anchors and links for the docstring.
         slug = Utilities.slugify(object)
@@ -342,9 +346,7 @@ function Selectors.runner(::Type{DocsBlocks}, x, page, doc)
         doc.internal.objects[object] = docsnode
         push!(nodes, docsnode)
     end
-    # When a `@docs` block fails we need to remove the `.language` since some markdown
-    # parsers have trouble rendering it correctly.
-    page.mapping[x] = failed ? (x.language = ""; x) : DocsNodes(nodes)
+    page.mapping[x] = DocsNodes(nodes)
 end
 
 # @autodocs
@@ -445,6 +447,7 @@ function Selectors.runner(::Type{AutoDocsBlocks}, x, page, doc)
             end
             markdown = Markdown.MD(Documenter.DocSystem.parsedoc(docstr))
             markdown.meta[:results] = [docstr]
+            doc.user.highlightsig && highlightsig!(markdown)
             slug = Utilities.slugify(object)
             anchor = Anchors.add!(doc.internal.docs, object, slug, page.build)
             docsnode = DocsNode(markdown, anchor, object, page)
@@ -537,9 +540,10 @@ function Selectors.runner(::Type{ExampleBlocks}, x, page, doc)
         for (ex, str) in Utilities.parseblock(code, doc, page; keywords = false)
             (value, success, backtrace, text) = Utilities.withoutput() do
                 cd(dirname(page.build)) do
-                    Core.eval(mod, Expr(:(=), :ans, ex))
+                    Core.eval(mod, ex)
                 end
             end
+            Core.eval(mod, Expr(:global, Expr(:(=), :ans, QuoteNode(value))))
             result = value
             print(buffer, text)
             if !success
@@ -562,28 +566,19 @@ function Selectors.runner(::Type{ExampleBlocks}, x, page, doc)
     content = []
     input   = droplines(x.code)
 
-    # Special-case support for displaying SVG and PNG graphics. TODO: make this more general.
-    output = if showable(MIME"text/html"(), result)
-        Documents.RawHTML(Base.invokelatest(stringmime, MIME"text/html"(), result))
-    elseif showable(MIME"image/svg+xml"(), result)
-        Documents.RawHTML(Base.invokelatest(stringmime, MIME"image/svg+xml"(), result))
-    elseif showable(MIME"image/png"(), result)
-        Documents.RawHTML(string("<img src=\"data:image/png;base64,", Base.invokelatest(stringmime, MIME"image/png"(), result), "\" />"))
-    elseif showable(MIME"image/webp"(), result)
-        Documents.RawHTML(string("<img src=\"data:image/webp;base64,", Base.invokelatest(stringmime, MIME"image/webp"(), result), "\" />"))
-    elseif showable(MIME"image/gif"(), result)
-        Documents.RawHTML(string("<img src=\"data:image/gif;base64,", Base.invokelatest(stringmime, MIME"image/gif"(), result), "\" />"))
-    elseif showable(MIME"image/jpeg"(), result)
-        Documents.RawHTML(string("<img src=\"data:image/jpeg;base64,", Base.invokelatest(stringmime, MIME"image/jpeg"(), result), "\" />"))
-    else
-        Markdown.Code(Documenter.DocTests.result_to_string(buffer, result))
-    end
+    # Generate different  in different formats and let each writer select
+    output = Base.invokelatest(Utilities.display_dict, result)
 
     # Only add content when there's actually something to add.
     isempty(input)  || push!(content, Markdown.Code("julia", input))
-    isempty(output.code) || push!(content, output)
+    if result === nothing
+        code = Documenter.DocTests.sanitise(buffer)
+        isempty(code) || push!(content, Markdown.Code(code))
+    elseif !isempty(output)
+        push!(content, output)
+    end
     # ... and finally map the original code block to the newly generated ones.
-    page.mapping[x] = Markdown.MD(content)
+    page.mapping[x] = Documents.MultiOutput(content)
 end
 
 # @repl
@@ -602,9 +597,10 @@ function Selectors.runner(::Type{REPLBlocks}, x, page, doc)
         input  = droplines(str)
         (value, success, backtrace, text) = Utilities.withoutput() do
             cd(dirname(page.build)) do
-                Core.eval(mod, Expr(:(=), :ans, ex))
+                Core.eval(mod, ex)
             end
         end
+        Core.eval(mod, Expr(:global, Expr(:(=), :ans, QuoteNode(value))))
         result = value
         output = if success
             hide = REPL.ends_with_semicolon(input)
@@ -685,7 +681,7 @@ end
 # Remove any `# hide` lines, leading/trailing blank lines, and trailing whitespace.
 function droplines(code; skip = 0)
     buffer = IOBuffer()
-    for line in split(code, '\n')[(skip + 1):end]
+    for line in split(code, r"\r?\n")[(skip + 1):end]
         occursin(r"^(.*)#\s*hide$", line) && continue
         println(buffer, rstrip(line))
     end
@@ -708,8 +704,18 @@ function get_new_sandbox(name::Symbol)
     # eval(expr) is available in the REPL (i.e. Main) so we emulate that for the sandbox
     Core.eval(m, :(eval(x) = Core.eval($m, x)))
     # modules created with Module() does not have include defined
-    Core.eval(m, :(include(x) = Base.include($m, x)))
+    Core.eval(m, :(include(x) = Base.include($m, abspath(x))))
     return m
+end
+
+highlightsig!(x) = nothing
+function highlightsig!(md::Markdown.MD)
+    isempty(md.content) || highlightsig!(first(md.content))
+end
+function highlightsig!(code::Markdown.Code)
+    if isempty(code.language)
+        code.language = "julia"
+    end
 end
 
 end

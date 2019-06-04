@@ -63,6 +63,8 @@ export Deps, makedocs, deploydocs, hide
         doctest = true,
         modules = Module[],
         repo    = "",
+        highlightsig = true,
+        sitename = "",
     )
 
 Combines markdown files and inline docstrings into an interlinked document.
@@ -94,7 +96,7 @@ The folder structure that [`makedocs`](@ref) expects looks like:
 this keyword does not need to be set. It is, for the most part, needed when repeatedly
 running `makedocs` from the Julia REPL like so:
 
-    julia> makedocs(root = joinpath(pathof(MyModule), "..", "..", "docs"))
+    julia> makedocs(root = joinpath(dirname(pathof(MyModule)), "..", "docs"))
 
 **`source`** is the directory, relative to `root`, where the markdown source files are read
 from. By convention this folder is called `src`. Note that any non-markdown files stored
@@ -149,6 +151,14 @@ For example if you are using GitLab.com, you could use
 makedocs(repo = \"https://gitlab.com/user/project/blob/{commit}{path}#{line}\")
 ```
 
+**`highlightsig`** enables or disables automatic syntax highlighting of leading, unlabeled
+code blocks in docstrings (as Julia code). For example, if your docstring begins with an
+indented code block containing the function signature, then that block would be highlighted
+as if it were a labeled Julia code block. No other code blocks are affected. This feature
+is enabled by default.
+
+**`sitename`** is displayed in the title bar and/or the navigation menu when applicable.
+
 # Experimental keywords
 
 In addition to standard arguments there is a set of non-finalized experimental keyword
@@ -194,11 +204,14 @@ function makedocs(components...; debug = false, format = HTML(),
                   html_disable_git::Union{Bool, Nothing} = nothing, # deprecated
                   html_edit_branch::Union{String, Nothing} = nothing, # deprecated
                   html_canonical::Union{String, Nothing} = nothing, # deprecated
+                  assets::Union{Vector{<:AbstractString}, Nothing} = nothing, # deprecated
+                  analytics::Union{<:AbstractString, Nothing} = nothing, # deprecated
                   kwargs...)
     # html_ keywords deprecation
     html_keywords = Dict()
     function html_warn(kw)
-        Base.depwarn("""
+        replace_with = startswith(kw, "html_") ? kw[6:end] : kw
+        @warn """
         The `$kw` keyword argument should now be specified in the
         `Documenter.HTML()` format specifier. To fix this warning replace
         ```
@@ -206,9 +219,9 @@ function makedocs(components...; debug = false, format = HTML(),
         ```
         with
         ```
-        format = Documenter.HTML($(kw[6:end]) = ...)
+        format = Documenter.HTML($(replace_with) = ...)
         ```
-        """, :makedocs)
+        """
     end
     if html_prettyurls !== nothing
         html_warn("html_prettyurls")
@@ -226,17 +239,25 @@ function makedocs(components...; debug = false, format = HTML(),
         html_warn("html_canonical")
         html_keywords[:canonical] = html_canonical
     end
+    if assets !== nothing
+        html_warn("assets")
+        html_keywords[:assets] = assets
+    end
+    if analytics !== nothing
+        html_warn("analytics")
+        html_keywords[:analytics] = analytics
+    end
 
     # deprecation of format as Symbols
     function fmt(f)
-        if format === :html
+        if f === :html
             Base.depwarn("`format = :html` is deprecated, use `format = Documenter.HTML()` instead.", :makedocs)
             return Writers.HTMLWriter.HTML(; html_keywords...)
-        elseif format === :latex
+        elseif f === :latex
             Base.depwarn("`format = :latex` is deprecated, use `format = LaTeX()` from " *
                 "the DocumenterLaTeX package instead.", :makedocs)
             return Writers.LaTeXWriter.LaTeX()
-        elseif format === :markdown
+        elseif f === :markdown
             Base.depwarn("`format = :markdown` is deprecated, use `format = Markdown()` " *
                 "from the DocumenterMarkdown package instead.", :makedocs)
             return Writers.MarkdownWriter.Markdown()
@@ -539,7 +560,7 @@ function deploydocs(;
     - $(marker(repo_ok)) ENV["TRAVIS_REPO_SLUG"]="$(travis_repo_slug)" occurs in repo="$(repo)"
     - $(marker(pr_ok)) ENV["TRAVIS_PULL_REQUEST"]="$(travis_pull_request)" is "false"
     - $(marker(tag_ok)) ENV["TRAVIS_TAG"]="$(travis_tag)" is (i) empty or (ii) a valid VersionNumber
-    - $(marker(branch_ok)) ENV["TRAVIS_BRANCH"]="$(travis_branch)" matches devbranch="$(devbranch) (if tag is empty)
+    - $(marker(branch_ok)) ENV["TRAVIS_BRANCH"]="$(travis_branch)" matches devbranch="$(devbranch)" (if tag is empty)
     - $(marker(key_ok)) ENV["DOCUMENTER_KEY"] exists
     - $(marker(type_ok)) ENV["TRAVIS_EVENT_TYPE"]="$(travis_event_type)" is not "cron"
     Deploying: $(marker(should_deploy))
@@ -595,8 +616,11 @@ function git_push(
 
     target_dir = abspath(target)
 
+    # Extract host from repo as everything up to first ':' or '/' character
+    host = match(r"(.*?)[:\/]", repo)[1]
+
     # The upstream URL to which we push new content and the ssh decryption commands.
-    upstream = "git@$(replace(repo, "github.com/" => "github.com:"))"
+    upstream = "git@$(replace(repo, "$host/" => "$host:"))"
 
     keyfile = abspath(joinpath(root, ".documenter"))
     try
@@ -615,10 +639,10 @@ function git_push(
         # Use a custom SSH config file to avoid overwriting the default user config.
         withfile(joinpath(homedir(), ".ssh", "config"),
             """
-            Host github.com
+            Host $host
                 StrictHostKeyChecking no
-                HostName github.com
-                IdentityFile $keyfile
+                HostName $host
+                IdentityFile "$keyfile"
                 BatchMode yes
             """
         ) do
@@ -736,6 +760,10 @@ function gitrm_copy(src, dst)
 end
 
 function withfile(func, file::AbstractString, contents::AbstractString)
+    dir = dirname(file)
+    hasdir = isdir(dir)
+    hasdir || mkpath(dir)
+
     hasfile = isfile(file)
     original = hasfile ? read(file, String) : ""
     open(file, "w") do stream
@@ -751,6 +779,11 @@ function withfile(func, file::AbstractString, contents::AbstractString)
             end
         else
             rm(file)
+        end
+
+        if !hasdir
+            # dir should be empty now as the only file inside was deleted
+            rm(dir, recursive=true)
         end
     end
 end

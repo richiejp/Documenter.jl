@@ -4,22 +4,18 @@ A module for rendering `Document` objects to HTML.
 # Keywords
 
 [`HTMLWriter`](@ref) uses the following additional keyword arguments that can be passed to
-[`Documenter.makedocs`](@ref): `assets`, `sitename`, `analytics`, `authors`, `pages`,
-`version`. The behavior of [`HTMLWriter`](@ref) can be further customized by passing
-[`Documenter.makedocs`](@ref) a [`HTML`](@ref), which accepts the following keyword
-arguments: `prettyurls`, `disable_git`, `edit_branch`, `canonical`.
+[`Documenter.makedocs`](@ref): `authors`, `pages`, `sitename`, `version`.
+The behavior of [`HTMLWriter`](@ref) can be further customized by setting the `format`
+keyword of [`Documenter.makedocs`](@ref) to a [`HTML`](@ref), which accepts the following
+keyword arguments: `analytics`, `assets`, `canonical`, `disable_git`, `edit_branch` and
+`prettyurls`.
 
 **`sitename`** is the site's title displayed in the title bar and at the top of the
 *navigation menu. This argument is mandatory for [`HTMLWriter`](@ref).
 
 **`pages`** defines the hierarchy of the navigation menu.
 
-**`assets`** can be used to include additional assets (JS, CSS, ICO etc. files). See below
-for more information.
-
 # Experimental keywords
-
-**`analytics`** can be used specify the Google Analytics tracking ID.
 
 **`version`** specifies the version string of the current version which will be the
 selected option in the version selector. If this is left empty (default) the version
@@ -41,34 +37,11 @@ then it is intended as the page title. This has two consequences:
    and in the `<title>` tag, unless specified in the `.pages` option.
 2. If the first heading is interpreted as being the page title, it is not displayed
    in the navigation sidebar.
-
-# Default and custom assets
-
-Documenter copies all files under the source directory (e.g. `/docs/src/`) over
-to the compiled site. It also copies a set of default assets from `/assets/html/`
-to the site's `assets/` directory, unless the user already had a file with the
-same name, in which case the user's files overrides the Documenter's file.
-This could, in principle, be used for customizing the site's style and scripting.
-
-The HTML output also links certain custom assets to the generated HTML documents,
-specifically a logo and additional javascript files.
-The asset files that should be linked must be placed in `assets/`, under the source
-directory (e.g `/docs/src/assets`) and must be on the top level (i.e. files in
-the subdirectories of `assets/` are not linked).
-
-For the **logo**, Documenter checks for the existence of `assets/logo.png`.
-If that's present, it gets displayed in the navigation bar.
-
-Additional JS, ICO, and CSS assets can be included in the generated pages using the
-`assets` keyword for `makedocs`. `assets` must be a `Vector{String}` and will include
-each listed asset in the `<head>` of every page in the order in which they are listed.
-The type of the asset (i.e. whether it is going to be included with a `<script>` or a
-`<link>` tag) is determined by the file's extension -- either `.js`, `.ico`, or `.css`.
-Adding an ICO asset is primarilly useful for setting a custom `favicon`.
 """
 module HTMLWriter
 
 import Markdown
+import JSON
 
 import ...Documenter:
     Anchors,
@@ -123,19 +96,51 @@ This allows search engines to know which version to send their users to. [See
 wikipedia for more information](https://en.wikipedia.org/wiki/Canonical_link_element).
 Default is `nothing`, in which case no canonical link is set.
 
+**`analytics`** can be used specify the Google Analytics tracking ID.
+
+**`assets`** can be used to include additional assets (JS, CSS, ICO etc. files). See below
+for more information.
+
+# Default and custom assets
+
+Documenter copies all files under the source directory (e.g. `/docs/src/`) over
+to the compiled site. It also copies a set of default assets from `/assets/html/`
+to the site's `assets/` directory, unless the user already had a file with the
+same name, in which case the user's files overrides the Documenter's file.
+This could, in principle, be used for customizing the site's style and scripting.
+
+The HTML output also links certain custom assets to the generated HTML documents,
+specifically a logo and additional javascript files.
+The asset files that should be linked must be placed in `assets/`, under the source
+directory (e.g `/docs/src/assets`) and must be on the top level (i.e. files in
+the subdirectories of `assets/` are not linked).
+
+For the **logo**, Documenter checks for the existence of `assets/logo.{svg,png,webp,gif,jpg,jpeg}`,
+in this order. The first one it finds gets displayed at the top of the navigation sidebar.
+
+Additional JS, ICO, and CSS assets can be included in the generated pages using the
+`assets` keyword for `makedocs`. `assets` must be a `Vector{String}` and will include
+each listed asset in the `<head>` of every page in the order in which they are listed.
+The type of the asset (i.e. whether it is going to be included with a `<script>` or a
+`<link>` tag) is determined by the file's extension -- either `.js`, `.ico`, or `.css`.
+Adding an ICO asset is primarilly useful for setting a custom `favicon`.
 """
 struct HTML <: Documenter.Plugin
-    prettyurls::Bool
-    disable_git:: Bool
-    edit_branch:: Union{String, Nothing}
-    canonical:: Union{String, Nothing}
+    prettyurls  :: Bool
+    disable_git :: Bool
+    edit_branch :: Union{String, Nothing}
+    canonical   :: Union{String, Nothing}
+    assets      :: Vector{String}
+    analytics   :: String
 
     function HTML(;
         prettyurls::Bool = true,
         disable_git::Bool = false,
         edit_branch::Union{String, Nothing} = "master",
-        canonical::Union{String, Nothing} = nothing)
-        new(prettyurls, disable_git, edit_branch, canonical)
+        canonical::Union{String, Nothing} = nothing,
+        assets::Vector{String} = String[],
+        analytics::String = "")
+        new(prettyurls, disable_git, edit_branch, canonical, assets, analytics)
     end
 end
 
@@ -144,6 +149,16 @@ const normalize_css = "https://cdnjs.cloudflare.com/ajax/libs/normalize/4.2.0/no
 const google_fonts = "https://fonts.googleapis.com/css?family=Lato|Roboto+Mono"
 const fontawesome_css = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.6.3/css/font-awesome.min.css"
 const highlightjs_css = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.12.0/styles/default.min.css"
+
+struct SearchRecord
+    src :: String
+    page :: Documents.Page
+    loc :: String
+    category :: String
+    title :: String
+    page_title :: String
+    text :: String
+end
 
 """
 [`HTMLWriter`](@ref)-specific globals that are passed to [`domify`](@ref) and
@@ -156,12 +171,54 @@ mutable struct HTMLContext
     scripts :: Vector{String}
     documenter_js :: String
     search_js :: String
-    search_index :: IOBuffer
+    search_index :: Vector{SearchRecord}
     search_index_js :: String
     search_navnode :: Documents.NavNode
     local_assets :: Vector{String}
 end
-HTMLContext(doc, settings=HTML()) = HTMLContext(doc, settings, "", [], "", "", IOBuffer(), "", Documents.NavNode("search", "Search", nothing), [])
+
+HTMLContext(doc, settings=HTML()) = HTMLContext(doc, settings, "", [], "", "", [], "", Documents.NavNode("search", "Search", nothing), [])
+
+function SearchRecord(ctx::HTMLContext, navnode; loc="", title=nothing, category="page", text="")
+    page_title = mdflatten(pagetitle(ctx, navnode))
+    if title === nothing
+        title = page_title
+    end
+    SearchRecord(
+        pretty_url(ctx, get_url(ctx, navnode.page)),
+        getpage(ctx, navnode),
+        loc,
+        lowercase(category),
+        title,
+        page_title,
+        text
+    )
+end
+
+function SearchRecord(ctx::HTMLContext, navnode, node::Markdown.Header)
+    a = getpage(ctx, navnode).mapping[node]
+    SearchRecord(ctx, navnode;
+        loc="$(a.id)-$(a.nth)",
+        title=mdflatten(node),
+        category="section")
+end
+
+function SearchRecord(ctx, navnode, node)
+    SearchRecord(ctx, navnode; text=mdflatten(node))
+end
+
+function JSON.lower(rec::SearchRecord)
+    # Replace any backslashes in links, if building the docs on Windows
+    src = replace(rec.src, '\\' => '/')
+    ref = string(src, '#', rec.loc)
+    Dict{String, String}(
+        "location" => ref,
+        "page" => rec.page_title,
+        "title" => rec.title,
+        "category" => rec.category,
+        "text" => rec.text
+    )
+end
 
 """
 Returns a page (as a [`Documents.Page`](@ref) object) using the [`HTMLContext`](@ref).
@@ -171,6 +228,7 @@ getpage(ctx, navnode::Documents.NavNode) = getpage(ctx, navnode.page)
 
 
 function render(doc::Documents.Document, settings::HTML=HTML())
+    @info "HTMLWriter: rendering HTML pages."
     !isempty(doc.user.sitename) || error("HTML output requires `sitename`.")
 
     ctx = HTMLContext(doc, settings)
@@ -178,9 +236,11 @@ function render(doc::Documents.Document, settings::HTML=HTML())
 
     copy_asset("arrow.svg", doc)
 
-    let logo = joinpath("assets", "logo.png")
+    for logoext in ["svg", "png", "webp", "gif", "jpg", "jpeg"]
+        logo = joinpath("assets", "logo.$(logoext)")
         if isfile(joinpath(doc.user.build, logo))
             ctx.logo = logo
+            break
         end
     end
 
@@ -188,7 +248,7 @@ function render(doc::Documents.Document, settings::HTML=HTML())
     ctx.search_js = copy_asset("search.js", doc)
 
     push!(ctx.local_assets, copy_asset("documenter.css", doc))
-    append!(ctx.local_assets, doc.user.assets)
+    append!(ctx.local_assets, settings.assets)
 
     for navnode in doc.internal.navlist
         render_page(ctx, navnode)
@@ -197,9 +257,13 @@ function render(doc::Documents.Document, settings::HTML=HTML())
     render_search(ctx)
 
     open(joinpath(doc.user.build, ctx.search_index_js), "w") do io
-        println(io, "var documenterSearchIndex = {\"docs\": [\n")
-        write(io, String(take!(ctx.search_index)))
-        println(io, "]}")
+        println(io, "var documenterSearchIndex = {\"docs\":")
+        # convert Vector{SearchRecord} to a JSON string, and escape two Unicode
+        # characters since JSON is not a JS subset, and we want JS here
+        # ref http://timelessrepo.com/json-isnt-a-javascript-subset
+        escapes = ('\u2028' => "\\u2028", '\u2029' => "\\u2029")
+        js = reduce(replace, escapes, init=JSON.json(ctx.search_index))
+        println(io, js, "\n}")
     end
 end
 
@@ -273,7 +337,7 @@ function render_head(ctx, navnode)
         meta[:name => "viewport", :content => "width=device-width, initial-scale=1.0"],
         title(page_title),
 
-        analytics_script(ctx.doc.user.analytics),
+        analytics_script(ctx.settings.analytics),
 
         canonical_link_element(ctx.settings.canonical, src),
 
@@ -380,7 +444,8 @@ function render_navmenu(ctx, navnode)
     navmenu = nav[".toc"]
     if !isempty(ctx.logo)
         push!(navmenu.nodes,
-            a[:href => relhref(src, "index.html")](
+            # the logo will point to the first page in the navigation menu
+            a[:href => navhref(ctx, first(ctx.doc.internal.navlist), navnode)](
                 img[
                     ".logo",
                     :src => relhref(src, ctx.logo),
@@ -652,101 +717,11 @@ Converts recursively a [`Documents.Page`](@ref), `Markdown` or Documenter
 """
 function domify(ctx, navnode)
     page = getpage(ctx, navnode)
-    sib = SearchIndexBuffer(ctx, navnode)
-    ret = map(page.elements) do elem
-        search_append(sib, elem)
+    map(page.elements) do elem
+        rec = SearchRecord(ctx, navnode, elem)
+        push!(ctx.search_index, rec)
         domify(ctx, navnode, page.mapping[elem])
     end
-    search_flush(sib)
-    ret
-end
-
-mutable struct SearchIndexBuffer
-    ctx :: HTMLContext
-    src :: String
-    page :: Documents.Page
-    loc :: String
-    category :: Symbol
-    title :: String
-    page_title :: String
-    buffer :: IOBuffer
-    function SearchIndexBuffer(ctx, navnode)
-        page_title = mdflatten(pagetitle(ctx, navnode))
-        new(
-            ctx,
-            pretty_url(ctx, get_url(ctx, navnode.page)),
-            getpage(ctx, navnode),
-            "",
-            :page,
-            page_title,
-            page_title,
-            IOBuffer()
-        )
-    end
-end
-
-function search_append(sib, node::Markdown.Header)
-    search_flush(sib)
-    sib.category = :section
-    sib.title = mdflatten(node)
-    a = sib.page.mapping[node]
-    sib.loc = "$(a.id)-$(a.nth)"
-end
-
-search_append(sib, node) = mdflatten(sib.buffer, node)
-
-function search_flush(sib)
-    # Replace any backslashes in links, if building the docs on Windows
-    src = replace(sib.src, '\\' => '/')
-    ref = "$(src)#$(sib.loc)"
-    text = String(take!(sib.buffer))
-    println(sib.ctx.search_index, """
-    {
-        "location": "$(jsescape(ref))",
-        "page": "$(jsescape(sib.page_title))",
-        "title": "$(jsescape(sib.title))",
-        "category": "$(jsescape(lowercase(string(sib.category))))",
-        "text": "$(jsescape(text))"
-    },
-    """)
-end
-
-"""
-Replaces some of the characters in the string with escape sequences so that the strings
-would be valid JS string literals, as per the
-[ECMAScript® 2017 standard](https://www.ecma-international.org/ecma-262/8.0/index.html#sec-literals-string-literals).
-
-Note that it always escapes both potential `"` and `'` closing quotes.
-"""
-function jsescape(s)
-    b = IOBuffer()
-    # From the ECMAScript® 2017 standard:
-    #
-    # > All code points may appear literally in a string literal except for the closing
-    # > quote code points, U+005C (REVERSE SOLIDUS), U+000D (CARRIAGE RETURN), U+2028 (LINE
-    # > SEPARATOR), U+2029 (PARAGRAPH SEPARATOR), and U+000A (LINE FEED).
-    #
-    # https://www.ecma-international.org/ecma-262/8.0/index.html#sec-literals-string-literals
-    for c in s
-        if c === '\u000a'     # LINE FEED,       i.e. \n
-            write(b, "\\n")
-        elseif c === '\u000d' # CARRIAGE RETURN, i.e. \r
-            write(b, "\\r")
-        elseif c === '\u005c' # REVERSE SOLIDUS, i.e. \
-            write(b, "\\\\")
-        elseif c === '\u0022' # QUOTATION MARK,  i.e. "
-            write(b, "\\\"")
-        elseif c === '\u0027' # APOSTROPHE,      i.e. '
-            write(b, "\\'")
-        elseif c === '\u2028' # LINE SEPARATOR
-            write(b, "\\u2028")
-        elseif c === '\u2029' # PARAGRAPH SEPARATOR
-            write(b, "\\u2029")
-        else
-            write(b, c)
-        end
-    end
-    String(take!(b))
 end
 
 function domify(ctx, navnode, node)
@@ -831,12 +806,13 @@ function domify(ctx, navnode, node::Documents.DocsNode)
     @tags a code div section span
 
     # push to search index
-    sib = SearchIndexBuffer(ctx, navnode)
-    sib.loc = node.anchor.id
-    sib.title = string(node.object.binding)
-    sib.category = Symbol(Utilities.doccat(node.object))
-    mdflatten(sib.buffer, node.docstr)
-    search_flush(sib)
+    rec = SearchRecord(ctx, navnode;
+        loc=node.anchor.id,
+        title=string(node.object.binding),
+        category=Utilities.doccat(node.object),
+        text = mdflatten(node.docstr))
+
+    push!(ctx.search_index, rec)
 
     section[".docstring"](
         div[".docstring-header"](
@@ -940,8 +916,8 @@ Returns the full path of a [`Documents.NavNode`](@ref) relative to `src/`.
 get_url(ctx, navnode::Documents.NavNode) = get_url(ctx, navnode.page)
 
 """
-If `html_prettyurls` is enabled, returns a "pretty" version of the `path` which can then be
-used in links in the resulting HTML file.
+If `prettyurls` for [`HTML`](@ref Documenter.HTML) is enabled, returns a "pretty" version of
+the `path` which can then be used in links in the resulting HTML file.
 """
 function pretty_url(ctx, path::AbstractString)
     if ctx.settings.prettyurls
@@ -1079,10 +1055,28 @@ function mdconvert(paragraph::Markdown.Paragraph, parent::Markdown.List; kwargs.
     return (list_has_loose_field && !parent.loose) ? content : Tag(:p)(content)
 end
 
-mdconvert(t::Markdown.Table, parent; kwargs...) = Tag(:table)(
-    Tag(:tr)(map(x -> Tag(:th)(mdconvert(x, t; kwargs...)), t.rows[1])),
-    map(x -> Tag(:tr)(map(y -> Tag(:td)(mdconvert(y, x; kwargs...)), x)), t.rows[2:end])
-)
+function mdconvert(t::Markdown.Table, parent; kwargs...)
+    @tags table tr th td
+    alignment_style = map(t.align) do align
+        if align == :r
+            "text-align: right"
+        elseif align == :c
+            "text-align: center"
+        else
+            "text-align: left"
+        end
+    end
+    table(
+        tr(map(enumerate(t.rows[1])) do (i, x)
+            th[:style => alignment_style[i]](mdconvert(x, t; kwargs...))
+        end),
+        map(t.rows[2:end]) do x
+            tr(map(enumerate(x)) do (i, y) # each cell in a row
+                td[:style => alignment_style[i]](mdconvert(y, x; kwargs...))
+            end)
+        end
+    )
+end
 
 mdconvert(expr::Union{Expr,Symbol}, parent; kwargs...) = string(expr)
 
@@ -1105,6 +1099,33 @@ end
 
 mdconvert(html::Documents.RawHTML, parent; kwargs...) = Tag(Symbol("#RAW#"))(html.code)
 
+# Select the "best" representation for HTML output.
+mdconvert(mo::Documents.MultiOutput, parent; kwargs...) =
+    Base.invokelatest(mdconvert, mo.content, parent; kwargs...)
+function mdconvert(d::Dict{MIME,Any}, parent; kwargs...)
+    if haskey(d, MIME"text/html"())
+        out = Documents.RawHTML(d[MIME"text/html"()])
+    elseif haskey(d, MIME"image/svg+xml"())
+        out = Documents.RawHTML(d[MIME"image/svg+xml"()])
+    elseif haskey(d, MIME"image/png"())
+        out = Documents.RawHTML(string("<img src=\"data:image/png;base64,", d[MIME"image/png"()], "\" />"))
+    elseif haskey(d, MIME"image/webp"())
+        out = Documents.RawHTML(string("<img src=\"data:image/webp;base64,", d[MIME"image/webp"()], "\" />"))
+    elseif haskey(d, MIME"image/gif"())
+        out = Documents.RawHTML(string("<img src=\"data:image/gif;base64,", d[MIME"image/gif"()], "\" />"))
+    elseif haskey(d, MIME"image/jpeg"())
+        out = Documents.RawHTML(string("<img src=\"data:image/jpeg;base64,", d[MIME"image/jpeg"()], "\" />"))
+    elseif haskey(d, MIME"text/latex"())
+        out = Utilities.mdparse(d[MIME"text/latex"()]; mode = :single)
+    elseif haskey(d, MIME"text/markdown"())
+        out = Markdown.parse(d[MIME"text/markdown"()])
+    elseif haskey(d, MIME"text/plain"())
+        out = Markdown.Code(d[MIME"text/plain"()])
+    else
+        error("this should never happen.")
+    end
+    return mdconvert(out, parent; kwargs...)
+end
 
 # fixlinks!
 # ------------------------------------------------------------------------------
