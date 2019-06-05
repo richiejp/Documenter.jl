@@ -1,6 +1,6 @@
-module DocTestsTest
-using Documenter, Compat.Test
-using Compat: @info
+# Tests for doctest = :fix
+module DocTestFixTest
+using Documenter, Test
 
 println("="^50)
 @info("Testing `doctest = :fix`")
@@ -15,10 +15,10 @@ let dir = joinpath(@__DIR__, "foo")
     include(joinpath(srcdir, "src.jl"))
     @eval using .Foo
     # fix up
-    makedocs(modules = [Foo], source = srcdir, build = builddir, doctest = :fix)
+    makedocs(sitename="-", modules = [Foo], source = srcdir, build = builddir, doctest = :fix)
     include(joinpath(srcdir, "src.jl"))
     # test that strict = true works
-    makedocs(modules = [Foo], source = srcdir, build = builddir, strict = true)
+    makedocs(sitename="-", modules = [Foo], source = srcdir, build = builddir, strict = true)
     # also test that we obtain the expected output
     @test read(joinpath(srcdir, "index.md"), String) ==
           read(joinpath(@__DIR__, "fixed.md"), String)
